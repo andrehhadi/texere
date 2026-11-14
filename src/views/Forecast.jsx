@@ -1,90 +1,92 @@
-import React from "react";
-import { useStore, update, activeAt, NOW, PLAN, supplyRows, getState } from "../store.js";
-import { SKUS, RETAILERS, FC, LY12, ALL_S, ALL_R, TODAY, ROLES, skuList, skuById, mLabel, shiftY } from "../data/catalog.js";
-import { sumUnits, forecastCell, affects, backtest, driversOf } from "../engine/model.js";
-import { Head, Kpi, Toggle, SimTag, toast } from "../ui/common.jsx";
-import { fK, fU, sp, sg, dcls, fDate } from "../ui/format.js";
+import React, { useState } from "react";
+import { useStore, update, activeAt, NOW, PLAN, key } from "../store.js";
+import { FC_MONTHS, HIST_MONTHS, FCW, NH, mLabel, wLabel, weeksInMonth, shiftYM, skuById, retById, WEEKS, ALL_R } from "../data/catalog.js";
+import { PERIODS, units, monthUnits, accuracy, compWeeks } from "../engine/analytics.js";
+import { publish } from "../actions.js";
 import { saveFile } from "../ai.js";
-import { go } from "../nav.js";
+import { FilterBar, useScope } from "../ui/filters.jsx";
+import { Card, Kpi, Seg, Btn, Badge, Delta, cx, toast } from "../ui/kit.jsx";
+import { Icon } from "../ui/icons.jsx";
+import { Lines } from "../ui/charts.jsx";
+import { fK, fU, sg, sp, fDate, plural } from "../ui/format.js";
 
-export function forecastCsv() {
-  const act = activeAt(NOW()), plan = activeAt(PLAN);
-  const lines = [["Item", "UPC", "Item description", "Customer", "Period", "Forecast units", "September plan units", "Last year units", "Planned %ACV", "Planned base price", "Change reasons"].join(",")];
-  for (const s of SKUS) for (const r of RETAILERS) for (const m of FC) {
-    const d = driversOf(s.id, r.id, m);
-    const rs = act.filter((a) => affects(a, s.id, r.id, m)).map((a) => a.id + ": " + a.summary).join(" | ");
-    lines.push([s.code, s.upc, `"${s.name}"`, r.name, m, Math.round(forecastCell(s.id, r.id, m, act)), Math.round(forecastCell(s.id, r.id, m, plan)), Math.round(sumUnits([s.id], [r.id], [shiftY(m, -1)], act)), d.acv.toFixed(1), d.basePrice.toFixed(2), `"${rs.replace(/"/g, "'")}"`].join(","));
+export default function Forecast({ go }) {
+  const { S, skus, rets, label } = useScope();
+  const now = activeAt(NOW()), plan = activeAt(PLAN), withP = activeAt(NOW(), true), pub = activeAt(S.lastSync);
+  const [grain, setGrain] = useState(S.ui.fcGrain || "month");
+  const [mode, setMode] = useState("units");
+  const [pend, setPend] = useState(false);
+  const act = pend ? withP : now;
+  const N13 = PERIODS.N13W.weeks, N52 = PERIODS.N52W.weeks;
+  const u13 = units(skus, rets, N13, act), p13 = units(skus, rets, N13, plan), y13 = units(skus, rets, compWeeks("N13W", "YA"), now);
+  const u52 = units(skus, rets, N52, act), p52 = units(skus, rets, N52, plan), y52 = units(skus, rets, compWeeks("N52W", "YA"), now);
+  const acc = accuracy(skus, rets);
+  const changed = S.assumptions.filter((a) => a.status === "approved" && key(a) > S.lastSync).length;
+  const hm = HIST_MONTHS.slice(-12);
+  const cols = grain === "month" ? FC_MONTHS.map((m) => ({ k: m, label: mLabel(m), w: weeksInMonth(m), lyw: weeksInMonth(shiftYM(m, -1)) })) : FCW.slice(0, 26).map((i) => ({ k: i, label: wLabel(i), w: [i], lyw: [i - 52] }));
+  const skuRows = skus.filter((s) => units([s], rets, N52, act) > 0 || units([s], rets, N52, plan) > 0);
+  const cell = (s, c) => { const v = units(s, rets, c.w, act), p = units(s, rets, c.w, plan), y = units(s, rets, c.lyw, now); return { v, p, y }; };
+  const show = (x) => (mode === "units" ? fK(x.v) : mode === "plan" ? (x.p ? sp((x.v / x.p - 1) * 100, 0) : "–") : x.y ? sp((x.v / x.y - 1) * 100, 0) : "new");
+  const heat = (x) => { const d = mode === "ly" ? (x.y ? x.v / x.y - 1 : 0) : x.p ? x.v / x.p - 1 : 0; if (Math.abs(d) < 0.005) return {}; const a = Math.min(0.5, Math.abs(d) * 2.2); return { background: `color-mix(in srgb, ${d > 0 ? "var(--good)" : "var(--bad)"} ${Math.round(a * 100)}%, transparent)` }; };
+  async function exportCsv() {
+    const lines = ["week_ending,retailer,upc,sku,units_forecast,units_plan"];
+    for (const s of skus) for (const r of rets) for (const i of N52) lines.push([WEEKS[i].end, r, skuById(s).upc, s, Math.round(units([s], [r], [i], now)), Math.round(units([s], [r], [i], plan))].join(","));
+    const res = await saveFile("texere-forecast-o9-import.csv", lines.join("\n"), "text/csv");
+    if (res === "saved") toast("Forecast exported in the o9 import format.");
   }
-  return lines.join("\n");
-}
-export async function exportForecast() {
-  const r = await saveFile("texere-forecast.csv", forecastCsv(), "text/csv");
-  if (r === "saved") toast("Forecast exported.");
-}
-export function publish() {
-  const S = getState();
-  const n = supplyRows().length;
-  if (!n) { toast(S.engine === "o9" ? "Nothing new to send. o9 already has the current assumptions." : "Nothing new to publish. Supply already has the current forecast."); return; }
-  update((s) => {
-    s.seq++; s.lastSync = TODAY + "#" + String(s.seq).padStart(3, "0");
-    s.syncLog.push({ at: TODAY, by: ROLES[s.role].person, note: s.engine === "o9" ? `Sent ${n} changed SKU-month${n === 1 ? "" : "s"} to o9 as demand assumptions (simulated)` : `Published ${n} changed SKU-month${n === 1 ? "" : "s"} to supply planning`, cells: SKUS.length * RETAILERS.length * FC.length });
-    s.acks = {};
-  });
-  toast(S.engine === "o9" ? `Sent to o9 (simulated). ${n} change${n === 1 ? "" : "s"}.` : `Published to supply. ${n} change${n === 1 ? "" : "s"}.`);
-}
-
-export default function Forecast() {
-  const S = useStore();
-  const u = S.ui;
-  const act = activeAt(NOW(), u.fcPending), plan = activeAt(PLAN);
-  const skus = skuList(u.fcSku);
-  const bt = backtest(ALL_S, ALL_R);
-  const tN = sumUnits(ALL_S, ALL_R, FC, act), tLY = sumUnits(ALL_S, ALL_R, LY12, act), tP = sumUnits(ALL_S, ALL_R, FC, plan);
-  const rows = u.fcGroup === "sku"
-    ? skus.map((s) => ({ label: skuById(s).short, sub: skuById(s).code, skus: [s], rets: ALL_R, kids: RETAILERS.map((r) => ({ label: r.name, skus: [s], rets: [r.id] })) }))
-    : RETAILERS.map((r) => ({ label: r.name, sub: "", skus, rets: [r.id], kids: skus.map((s) => ({ label: skuById(s).short, skus: [s], rets: [r.id] })) }));
-  const open = (r) => { update((s) => { s.ui.sku = r.skus.length === 1 ? r.skus[0] : "ALL"; s.ui.ret = r.rets.length === 1 ? r.rets[0] : "ALL"; }); go("timeline"); };
-  const Row = ({ r, kid }) => {
-    const tot = sumUnits(r.skus, r.rets, FC, act), ly = sumUnits(r.skus, r.rets, LY12, act);
-    return (
-      <tr className="click" tabIndex={0} onClick={() => open(r)}>
-        <td className="sticky" style={{ minWidth: kid ? 170 : 190, paddingLeft: kid ? 26 : undefined, color: kid ? "var(--ink-2)" : undefined, fontWeight: kid ? 400 : 600 }}>{r.label}{r.sub ? <div className="small muted mono" style={{ fontWeight: 400 }}>{r.sub}</div> : null}</td>
-        {FC.map((m) => { const v = sumUnits(r.skus, r.rets, [m], act), p = sumUnits(r.skus, r.rets, [m], plan); return <td key={m} className={"n" + (Math.abs(v - p) > 1 ? " cell-chg" : "")} title={Math.abs(v - p) > 1 ? `September plan ${fU(p)}` : undefined}>{fK(v)}</td>; })}
-        <td className="n" style={{ fontWeight: 600 }}>{fK(tot)}</td><td className={"n " + dcls(tot - ly)}>{ly ? sp((tot / ly - 1) * 100) : "new"}</td>
-      </tr>
-    );
-  };
   return (
     <>
-      <Head title="Forecast and splits" sub="Texere builds the forecast: a driver model fit on NielsenIQ history (distribution, price, promotion, display, seasonality, trend), plus every accepted assumption from your teams.">
-        <button className="btn" type="button" onClick={exportForecast}>Export CSV</button>
-        <button className="btn primary" type="button" onClick={publish}>{S.engine === "o9" ? "Send to o9" : "Publish to supply"}</button>
-      </Head>
-      <div className="engine-bar">
-        <div><b>Forecast engine:</b> {S.engine === "o9" ? <>o9 computes the final numbers; Texere sends it structured assumptions <SimTag>o9 connection simulated</SimTag></> : <>Texere (driver model + context)</>}</div>
-        <button className="btn sm ghost" type="button" onClick={() => go("settings")}>Change in Settings</button>
+      <div className="ph">
+        <div><h1>Forecast</h1><p className="sub">Texere's forecast: a NielsenIQ driver baseline (distribution, price, trade calendar, seasonality, trend) adjusted by every approved assumption. Each number traces back to the conversation behind it.</p></div>
+        <div className="ph-a">
+          <Btn icon="download" onClick={exportCsv}>Export for o9</Btn>
+          <Btn kind="primary" icon="send" onClick={publish} disabled={!changed}>{changed ? `Publish ${plural(changed, "change")} to supply` : "Published"}</Btn>
+        </div>
       </div>
-      <div className="grid-kpi">
-        <Kpi label="Next 12 months" value={fK(tN) + " units"} sub={`${sp((tN / tLY - 1) * 100)} vs the last 12 months`} />
-        <Kpi label="vs September consensus" value={sg(tN - tP)} vClass={dcls(tN - tP)} sub={sp((tN / tP - 1) * 100)} />
-        <Kpi label="Backtest accuracy" value={(bt.withContext * 100).toFixed(1) + "%"} sub={`vs ${(bt.noContext * 100).toFixed(1)}% without captured context, last 12 months`} />
-        <Kpi label="Last published" value={fDate(S.lastSync.slice(0, 10))} sub={S.engine === "o9" ? "to o9" : "to supply planning"} />
+      <div className={cx("banner", S.engine === "o9" && "warn")}>
+        <Icon name={S.engine === "o9" ? "merge" : "zap"} size={16} />
+        {S.engine === "o9" ? <span><b>Path B: o9 runs the statistical forecast.</b> Texere sends approved assumptions to o9 as dated overrides and reads the result back. Switch engines in <button className="link" type="button" onClick={() => go("settings")}>Settings</button>.</span>
+          : <span><b>Texere runs this forecast.</b> Last published to supply {fDate(S.lastSync)} by {S.syncLog[0]?.by}. {changed ? plural(changed, "approved change") + " since then." : "No changes since."} o9 can be used as the engine instead (<button className="link" type="button" onClick={() => go("settings")}>Settings</button>).</span>}
       </div>
-      <div className="row">
-        <span className="small">Split by</span>
-        <Toggle label="Split by" value={u.fcGroup} onChange={(v) => update((s) => { s.ui.fcGroup = v; })} options={[["sku", "SKU, then retailer"], ["ret", "Retailer, then SKU"]]} />
-        <label className="small" htmlFor="fc-sku">SKU</label>
-        <select id="fc-sku" value={u.fcSku} onChange={(e) => update((s) => { s.ui.fcSku = e.target.value; })}><option value="ALL">All SKUs</option>{SKUS.map((s) => <option key={s.id} value={s.id}>{s.short}</option>)}</select>
-        <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={u.fcPending} onChange={(e) => update((s) => { s.ui.fcPending = e.target.checked; })} /> Include items waiting for review (what-if)</label>
+      <FilterBar />
+      <div className="kpis">
+        <Kpi label="Next 13 weeks" value={fK(u13)} delta={u13 - p13} deltaText={sp((u13 / p13 - 1) * 100) + " vs plan"} foot={sp((u13 / y13 - 1) * 100) + " YoY"} />
+        <Kpi label="Next 52 weeks" value={fK(u52)} delta={u52 - p52} deltaText={sp((u52 / p52 - 1) * 100) + " vs plan"} foot={sp((u52 / y52 - 1) * 100) + " YoY"} />
+        <Kpi label="Change since plan" value={sg(u52 - p52)} delta={u52 - p52} deltaText="units, 52 wks" />
+        <Kpi label="Pending, if approved" value={sg(units(skus, rets, N52, withP) - units(skus, rets, N52, now))} foot={plural(S.assumptions.filter((a) => a.status === "pending").length, "item")} />
+        <Kpi label="Backtest accuracy" value={(acc.withContext * 100).toFixed(0) + "%"} delta={acc.withContext - acc.noContext} deltaText={"+" + ((acc.withContext - acc.noContext) * 100).toFixed(0) + " pts from context"} foot={"history only: " + (acc.noContext * 100).toFixed(0) + "%"} />
       </div>
-      <div className="tbl-wrap"><table>
-        <thead><tr><th className="sticky">{u.fcGroup === "sku" ? "SKU / retailer" : "Retailer / SKU"}</th>{FC.map((m) => <th key={m} className="n">{mLabel(m)}</th>)}<th className="n">12 mo</th><th className="n">vs LY</th></tr></thead>
-        <tbody>
-          {rows.map((r) => <React.Fragment key={r.label}><Row r={r} />{r.kids.map((k) => <Row key={k.label} r={k} kid />)}</React.Fragment>)}
-          <tr><td className="sticky" style={{ fontWeight: 700 }}>Total</td>{FC.map((m) => <td key={m} className="n" style={{ fontWeight: 600 }}>{fK(sumUnits(skus, ALL_R, [m], act))}</td>)}<td className="n" style={{ fontWeight: 700 }}>{fK(sumUnits(skus, ALL_R, FC, act))}</td><td /></tr>
-        </tbody>
-      </table></div>
-      <p className="small muted">{u.fcPending ? "What-if view including items still waiting for review. These numbers are not published." : "Rust numbers changed since the September plan; hover for the plan value. Select any row to open its timeline."}</p>
+      <Card id="fc" title={label} sub="Monthly units. The forecast starts in November."
+        actions={<label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={pend} onChange={(e) => setPend(e.target.checked)} />Include pending items</label>}>
+        <Lines height={260} labels={[...hm, ...FC_MONTHS].map(mLabel)} splitAt={12}
+          series={[
+            { name: "Year ago", color: "var(--faint)", width: 1.5, values: [...hm, ...FC_MONTHS].map((m) => monthUnits(skus, rets, shiftYM(m, -1), now) || null) },
+            { name: "Actual", color: "var(--ink-2)", values: [...hm.map((m) => monthUnits(skus, rets, m, now)), ...FC_MONTHS.map(() => null)] },
+            { name: "Plan (Sep)", color: "var(--muted)", dash: "5 4", values: [...hm.map(() => null), ...FC_MONTHS.map((m) => monthUnits(skus, rets, m, plan))] },
+            { name: "Published to supply", color: "var(--saffron)", dash: "2 3", values: [...hm.map(() => null), ...FC_MONTHS.map((m) => monthUnits(skus, rets, m, pub))] },
+            { name: pend ? "Forecast incl. pending" : "Forecast now", color: "var(--brand)", width: 2.6, dots: true, values: [...hm.map((m, i) => (i === 11 ? monthUnits(skus, rets, m, now) : null)), ...FC_MONTHS.map((m) => monthUnits(skus, rets, m, act))] },
+          ]} />
+      </Card>
+      <Card pad={false} id="grid" title="Forecast by SKU" sub={mode === "units" ? "Units. Cell color shows the change vs plan." : mode === "plan" ? "Change vs the September plan" : "Change vs the same period last year"}
+        actions={<><Seg size="sm" value={mode} onChange={setMode} options={[["units", "Units"], ["plan", "vs plan"], ["ly", "vs LY"]]} label="Show" /><Seg size="sm" value={grain} onChange={(g) => { setGrain(g); update((s) => { s.ui.fcGrain = g; }); }} options={[["month", "Monthly"], ["week", "Weekly"]]} label="Grain" /></>}>
+        <div className="tbl-wrap" style={{ maxHeight: 560 }}><table className="tbl" style={{ fontSize: 12.5 }}>
+          <thead><tr><th style={{ position: "sticky", left: 0, zIndex: 2 }}>SKU</th>{cols.map((c) => <th key={c.k} className="r">{c.label}</th>)}<th className="r">Total</th><th className="r">vs plan</th><th className="r">vs LY</th></tr></thead>
+          <tbody>
+            {skuRows.map((s) => {
+              const cs = cols.map((c) => cell([s], c)); const t = cs.reduce((o, x) => ({ v: o.v + x.v, p: o.p + x.p, y: o.y + x.y }), { v: 0, p: 0, y: 0 });
+              return <tr key={s}><td style={{ position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }}><div className="name">{skuById(s).short}</div><div className="meta">{skuById(s).subbrand} · {skuById(s).platform}</div></td>
+                {cs.map((x, i) => <td key={i} className="r num" style={heat(x)} title={`Forecast ${fU(x.v)} · plan ${fU(x.p)} · LY ${fU(x.y)}`}>{show(x)}</td>)}
+                <td className="r num"><b>{fK(t.v)}</b></td><td className="r"><Delta v={t.v - t.p} small>{t.p ? sp((t.v / t.p - 1) * 100) : "–"}</Delta></td><td className="r"><Delta v={t.v - t.y} small>{t.y ? sp((t.v / t.y - 1) * 100) : "new"}</Delta></td></tr>;
+            })}
+            {(() => { const cs = cols.map((c) => cell(skuRows, c)); const t = cs.reduce((o, x) => ({ v: o.v + x.v, p: o.p + x.p, y: o.y + x.y }), { v: 0, p: 0, y: 0 }); return (
+              <tr className="tot"><td style={{ position: "sticky", left: 0, background: "var(--surface)" }}>Total</td>{cs.map((x, i) => <td key={i} className="r num" style={heat(x)}>{show(x)}</td>)}<td className="r num">{fK(t.v)}</td><td className="r"><Delta v={t.v - t.p} small>{sp((t.v / t.p - 1) * 100)}</Delta></td><td className="r"><Delta v={t.v - t.y} small>{sp((t.v / t.y - 1) * 100)}</Delta></td></tr>); })()}
+          </tbody>
+        </table></div>
+      </Card>
+      <Card id="pub" title="Publish history" sub="What supply planning has received">
+        <div className="tbl-wrap"><table className="tbl"><thead><tr><th>Date</th><th>By</th><th>Note</th><th className="r">Cells</th></tr></thead>
+          <tbody>{S.syncLog.map((l, i) => <tr key={i}><td className="num">{fDate(l.at)}</td><td>{l.by}</td><td>{l.note}</td><td className="r num">{fU(l.cells)}</td></tr>)}</tbody></table></div>
+      </Card>
     </>
   );
 }

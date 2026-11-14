@@ -2,7 +2,7 @@
 import PptxGenJS from "pptxgenjs";
 import { mShort } from "../data/catalog.js";
 
-const C = { ink: "141720", ink2: "464C5C", ink3: "656B7C", accent: "3438B0", weft: "B9501A", good: "1D6F47", bad: "AE2A1F", warn: "875B00", line: "DADDE5", soft: "E5E6FA", bg: "FFFFFF" };
+const C = { ink: "15162B", ink2: "3B3D55", ink3: "6B6D82", accent: "2A2FB8", weft: "F0A527", good: "0E8F6E", bad: "D0442F", warn: "B7791F", line: "E4E3DC", soft: "ECEDFD", bg: "FFFFFF" };
 const FONT = "Calibri";
 
 export async function deckToPptx(slides, filename) {
@@ -17,7 +17,7 @@ export async function deckToPptx(slides, filename) {
       sl.addShape(p.ShapeType.rect, { x: 0.35, y: 0, w: 0.12, h: 7.5, fill: { color: C.weft } });
       sl.addText(s.title, { x: 1.0, y: 2.5, w: 11, h: 1.4, fontFace: FONT, fontSize: 36, bold: true, color: C.ink });
       sl.addText(s.sub || "", { x: 1.0, y: 3.9, w: 11, h: 0.6, fontFace: FONT, fontSize: 16, color: C.ink3 });
-      sl.addText("Texere", { x: 1.0, y: 6.6, w: 4, h: 0.4, fontFace: FONT, fontSize: 12, bold: true, color: C.accent });
+      sl.addText("texere", { x: 1.0, y: 6.6, w: 4, h: 0.4, fontFace: FONT, fontSize: 12, bold: true, color: C.accent });
       return;
     }
     if (s.kicker) sl.addText(s.kicker.toUpperCase(), { x: 0.6, y: 0.35, w: 12, h: 0.3, fontFace: FONT, fontSize: 11, bold: true, color: C.ink3, charSpacing: 2 });
@@ -37,7 +37,7 @@ export async function deckToPptx(slides, filename) {
       });
     }
     if (s.type === "trend") {
-      const labels = s.months.map((m) => mShort(m) + " " + m.slice(2, 4));
+      const labels = s.labels || s.months.map((m) => mShort(m) + " " + m.slice(2, 4));
       const data = s.series.map((se) => ({ name: se.name, labels, values: se.values.map((v) => (v == null ? null : Math.round(v))) }));
       sl.addChart(p.ChartType.line, data, { x: 0.6, y: 1.6, w: 12.1, h: 4.9, chartColors: [C.ink, C.accent, "A7ACB8"], lineSize: 2, lineDataSymbol: "none", showLegend: true, legendPos: "b", valAxisLabelFormatCode: "#,##0", catAxisLabelFontSize: 10, valAxisLabelFontSize: 10, legendFontSize: 11, displayBlanksAs: "gap" });
     }

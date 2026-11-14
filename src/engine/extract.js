@@ -1,9 +1,9 @@
-import { SKUS, RETAILERS, FC, TODAY, BRAND, KINDS, DRIVERS, CONF, skuById, retById } from "../data/catalog.js";
+import { SKUS, RETAILERS, FC_MONTHS as FC, TODAY, COMPANY as BRAND, KINDS, DRIVERS, CONF, skuById, retById } from "../data/catalog.js";
 import { getState, statusOf, assm } from "../store.js";
 
 export function extractPrompt(c) {
   const S = getState();
-  const sk = SKUS.map((s) => `${s.id}: ${s.name}${s.launch ? " (new, launches " + s.launch + ")" : ""}; people may say: ${s.aliases}`).join("\n");
+  const sk = SKUS.map((s) => `${s.id}: ${s.name} (${s.brand} / ${s.subbrand} / ${s.platform})${s.launch ? " (new, launches " + s.launch + ")" : ""}; people may say: ${s.aliases}`).join("\n");
   const rt = RETAILERS.map((r) => `${r.id}: ${r.name}`).join("\n");
   const ex = S.assumptions.filter((a) => ["approved", "pending"].includes(statusOf(a)))
     .map((a) => `${a.id}: ${a.summary} | SKUs ${a.skus.join(",")} | retailers ${a.retailers.join(",")} | months ${a.months[0]} to ${a.months[a.months.length - 1]} | impact ${a.impact}% | ${a.status}`).join("\n");

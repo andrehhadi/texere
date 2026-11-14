@@ -1,17 +1,19 @@
 # Texere
 
-Texere captures what every team and the market say about each product, turns it into dated, sourced forecast assumptions, and runs the CPG sales forecast from NielsenIQ history plus that context. This repository is a working prototype with a fictional brand (Lumen Skincare) and example data.
+Texere captures what every team and the market say about each product, turns it into dated, sourced forecast assumptions, and runs the CPG sales forecast from NielsenIQ history plus that context. This repository is a working prototype with a fictional company (Lumen Beauty Co.: 2 brands, 5 sub-brands, 11 SKUs, 4 retailers, 5 competitors) and 104 weeks of simulated NielsenIQ data.
 
 ## What's in the app
 
-- **Capture**: upload Zoom/Teams `.vtt` transcripts or paste Meet, Slack or email text. Claude extracts assumptions by SKU, retailer and month; the contributor approves what's shared.
-- **Review and discussion**: the brand manager asks questions on any assumption, gets answers from the contributor or from the source transcript, then accepts or rejects.
-- **SKU timeline**: every change to the forecast, when, why and who said it.
-- **Forecast**: driver model (distribution, price, promotion, display, seasonality, trend) fit on NielsenIQ-style history, plus accepted assumptions. Optional mode sends assumptions to o9 instead (simulated).
-- **Supply handoff**: changes since the last publish, risks, acknowledgement, CSV export.
-- **Driver reports**: waterfalls that explain actuals and the forecast by driver.
-- **Shareouts**: VP note, three deck templates with a PowerPoint download, and Ask Texere.
-- **Data sources**: the NielsenIQ fields used, coverage, and CSV upload of your own export.
+- **Home**: what changed since you last looked, what needs you, KPIs, forecast vs plan.
+- **Approvals**: inbox to approve, reject or edit assumptions, with a discussion thread per item (ask the contributor, get answers, ask Texere to check it) and bulk actions.
+- **Context timeline**: plan vs forecast vs actual by month with the variance vs plan, driver swimlanes of past NielsenIQ events and future assumptions. Click to inspect, double-click for comments and full change history. Month bridges from plan to forecast, and a change log with diffs.
+- **Performance**: LW, L4W, L13W, L52W, YTD, N13W, N52W; YoY or period over period (WoW, QoQ). Filters for category, brand, sub-brand, platform, SKU and retailer. KPIs for sales, units, share, TDPs, velocity, price, TPR, feature, display and incrementality; driver waterfall with drill-down; weekly trend; scorecard by any hierarchy level.
+- **Competition**: share, price and promotion by competitor, share trend, measured competitive events and web signals you can send for approval.
+- **Forecast**: SKU by month or week grid vs plan or LY, accuracy backtest, publish to supply, o9 export (Path B: o9 as the engine).
+- **Supply view**: frozen, slushy and liquid demand changes since the last publish, 26-week projected inventory vs safety stock, first risk week, acknowledgement and expedite requests.
+- **Capture**: Zoom, Teams, Slack, email and web sources; upload or paste transcripts and extract assumptions with Claude.
+- **Shareouts**: weekly VP note, three decks with PowerPoint download, Ask Texere.
+- **Data sources**: the NielsenIQ pipeline and fields, weekly CSV download and upload.
 
 ## Real vs simulated
 

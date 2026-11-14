@@ -1,143 +1,133 @@
-// Turns the data into words: driver stories, the VP note and presentation decks.
-import { ALL_S, ALL_R, LY12, PY12, FC, HIST, BRAND, TODAY, ROLES, skuById, retById, DRIVERS, mLabel } from "../data/catalog.js";
-import { decompose, topCells, driverNote, DECOMP_ORDER, DECOMP_LABEL, kpis, sumUnits, sumDollars, backtest } from "./model.js";
-import { getState, activeAt, NOW, PLAN, statusOf, recent, supplyRows, capById, unitImpact, key } from "../store.js";
-import { fK, fU, sp, sg, fMoney, mRange, skuNames, retNames, fDate, lcFirst, pts } from "../ui/format.js";
+// Words from data: driver stories, the VP note and presentation decks.
+import { ALL_S, ALL_R, FC_MONTHS, HIST_MONTHS, COMPANY, TODAY, ROLES, skuById, retById, mLabel, shiftYM, weeksInMonth } from "../data/catalog.js";
+import { PERIODS, compWeeks, decompose, decompSteps, topCells, driverNote, DECOMP_LABEL, kpis, units, shareOf, accuracy, monthUnits, periodLabel, competitorTable } from "./analytics.js";
+import { getState, activeAt, NOW, PLAN, statusOf, capById, key } from "../store.js";
+import { allSupply } from "./supply.js";
+import { fK, fU, sp, sg, fMoney, mRange, fDate, lcFirst, pts } from "../ui/format.js";
 
-export const PERIODS = {
-  ly: { label: "Last 12 months vs a year ago", a: PY12, b: LY12, aLabel: "Nov ’24 to Oct ’25", bLabel: "Nov ’25 to Oct ’26" },
-  fc: { label: "Next 12 months (forecast) vs last 12 months", a: LY12, b: FC, aLabel: "Last 12 months", bLabel: "Next 12 months" },
-  q: { label: "Latest quarter vs a year ago", a: PY12.slice(-3), b: LY12.slice(-3), aLabel: "Aug to Oct ’25", bLabel: "Aug to Oct ’26" },
-};
+const mapDriver = (d) => ({ promotion: "promotion", price: "price", distribution: "distribution", display: "display", supply: "supply", launch: "launch", competition: "competition" }[d] || "context");
 
-export function driverSteps(dec) {
-  return DECOMP_ORDER.map((k) => ({ key: k, label: DECOMP_LABEL[k], v: dec.total[k] })).filter((s) => Math.abs(s.v) >= 1);
+export function impactUnits(a, act) {
+  const without = act.filter((x) => x.id !== a.id && x.id !== a.supersedes), withA = [...without, a];
+  let d = 0; for (const m of a.months) d += units(a.skus, a.retailers, weeksInMonth(m), withA) - units(a.skus, a.retailers, weeksInMonth(m), without);
+  return d;
 }
 
 export function driverStory(dec, period, skus = ALL_S, rets = ALL_R) {
-  const S = getState();
   const d = dec.B - dec.A, pct = dec.A ? (d / dec.A) * 100 : 0;
-  const what = period === "fc" ? "Units are forecast to " + (d >= 0 ? "grow " : "fall ") : "Units " + (d >= 0 ? "grew " : "fell ");
-  const headline = `${what}${sp(Math.abs(pct)).replace(/^[+−]/, "")} (${sg(d)}) ${period === "fc" ? "in the next 12 months versus the last 12" : period === "q" ? "in the latest quarter versus a year ago" : "in the last 12 months versus a year ago"}.`;
+  const fc = period.startsWith("N");
+  const headline = `${fc ? "Units are forecast to " + (d >= 0 ? "grow " : "fall ") : "Units " + (d >= 0 ? "grew " : "fell ")}${Math.abs(pct).toFixed(1)}% (${sg(d)})`;
   const bullets = [];
-  const steps = driverSteps(dec).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 4);
+  const steps = decompSteps(dec).filter((s) => s.key !== "other").sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 4);
   for (const st of steps) {
     let why = "";
-    const tops = topCells(dec, st.key, 2).filter((t) => Math.abs(t.v) > Math.abs(st.v) * 0.2);
-    if (period === "fc" && !["trend"].includes(st.key)) {
+    if (fc) {
       const ctx = activeAt(NOW()).filter((a) => a.skus.some((s) => skus.includes(s)) && a.retailers.some((r) => rets.includes(r)) && mapDriver(a.driver) === st.key);
-      if (ctx.length) why = "from " + ctx.slice(0, 2).map((a) => `${lcFirst(a.summary)} (${a.id})`).join("; ");
+      if (ctx.length) why = ctx.slice(0, 2).map((a) => `${lcFirst(a.summary)} (${a.id})`).join("; ");
     }
-    if (!why && tops.length) {
-      why = "mostly " + tops.map((t) => { const n = driverNote(st.key, t.sku, t.ret); return `${skuById(t.sku).short} at ${retById(t.ret).name}${n ? " (" + lcFirst(n) + ")" : ""}`; }).join(" and ");
+    if (!why) {
+      const tops = topCells(dec, st.key, 2).filter((t) => Math.abs(t.v) > Math.abs(st.v) * 0.2);
+      if (tops.length) why = "mostly " + tops.map((t) => { const n = driverNote(st.key, t.sku, t.ret); return `${skuById(t.sku).short} at ${retById(t.ret).name}${n ? " (" + lcFirst(n) + ")" : ""}`; }).join(" and ");
     }
-    if (st.key === "trend" && !why) why = "underlying growth in velocity";
-    bullets.push({ key: st.key, text: `${st.label} ${st.v >= 0 ? "added" : "took away"} ${fK(Math.abs(st.v))} units${why ? ", " + why : ""}.` });
+    bullets.push({ key: st.key, v: st.v, text: `${st.label}: ${sg(st.v)} units${why ? ", " + why : ""}.` });
   }
   return { headline, bullets, delta: d, pct };
 }
-const mapDriver = (drv) => ({ promotion: "promotion", price: "price", distribution: "distribution", display: "display", supply: "supply", launch: "launch", competition: "competition" }[drv] || "other");
 
 export function vpNote() {
   const S = getState();
   const now = activeAt(NOW()), plan = activeAt(PLAN);
-  const tN = sumUnits(ALL_S, ALL_R, FC, now), tP = sumUnits(ALL_S, ALL_R, FC, plan), tLY = sumUnits(ALL_S, ALL_R, LY12, now);
-  const wk = recent(7).filter((a) => ["approved", "pending"].includes(statusOf(a)));
-  const appr = wk.filter((a) => a.status === "approved").sort((a, b) => Math.abs(unitImpact(b, now)) - Math.abs(unitImpact(a, now)));
+  const fcW = PERIODS.N52W.weeks;
+  const tN = units(ALL_S, ALL_R, fcW, now), tP = units(ALL_S, ALL_R, fcW, plan);
+  const k1 = kpis(ALL_S, ALL_R, PERIODS.L13W.weeks), k0 = kpis(ALL_S, ALL_R, compWeeks("L13W", "YA"));
+  const sh1 = shareOf(ALL_S, ALL_R, PERIODS.L13W.weeks), sh0 = shareOf(ALL_S, ALL_R, compWeeks("L13W", "YA"));
+  const wk = S.assumptions.filter((a) => a.status === "approved" && a.decidedAt >= "2026-11-06").sort((a, b) => Math.abs(impactUnits(b, now)) - Math.abs(impactUnits(a, now)));
   const pend = S.assumptions.filter((a) => a.status === "pending");
-  const risks = supplyRows().filter((r) => r.risk);
-  const decLY = decompose(ALL_S, ALL_R, PY12, LY12, now);
-  const top = driverSteps(decLY).sort((a, b) => Math.abs(b.v) - Math.abs(a.v))[0];
-  const sentences = [
-    `Next-12-month forecast is ${fK(tN)} units, ${sp(((tN / tP) - 1) * 100)} versus the September consensus and ${sp(((tN / tLY) - 1) * 100)} versus the last 12 months of actuals.`,
-    appr.length ? `This week's biggest change: ${lcFirst(appr[0].summary)} (${sg(unitImpact(appr[0], now))} units, from ${capById(appr[0].capture)?.team.toLowerCase() || "the team"}).` : `No new changes were accepted this week.`,
-    `Over the last 12 months, ${DECOMP_LABEL[top.key].toLowerCase()} was the biggest driver of performance (${sg(top.v)} units).`,
-    risks.length ? `Supply has ${risks.length} SKU-month${risks.length === 1 ? "" : "s"} moving 10% or more since the last publish; the largest is ${skuById(risks[0].sku).short} in ${mLabel(risks[0].m)} (${sg(risks[0].diff)}).` : `No supply risks above 10% since the last publish.`,
-    pend.length ? `${pend.length} item${pend.length === 1 ? " is" : "s are"} still under review, worth ${sg(pend.reduce((t, a) => t + unitImpact(a, now), 0))} units if accepted.` : "",
-  ].filter(Boolean);
-  return { subject: `${BRAND} forecast update, week of ${fDate(TODAY)}`, body: sentences.join(" "), bullets: appr.slice(0, 3).map((a) => `${a.summary} (${sg(unitImpact(a, now))} units)`) };
+  const risks = allSupply().filter((x) => x.firstRisk);
+  const dec = decompose(ALL_S, ALL_R, compWeeks("L13W", "YA"), PERIODS.L13W.weeks);
+  const top = decompSteps(dec).filter((s) => s.key !== "other").sort((a, b) => Math.abs(b.v) - Math.abs(a.v))[0];
+  const body = [
+    `Last 13 weeks: ${fMoney(k1.dollars)} in sales, ${sp((k1.dollars / k0.dollars - 1) * 100)} vs a year ago, with dollar share ${pts((sh1 - sh0) * 100)} to ${(sh1 * 100).toFixed(1)}%. The biggest driver was ${DECOMP_LABEL[top.key].toLowerCase()} (${sg(top.v)} units).`,
+    `The next-52-week forecast is ${fK(tN)} units, ${sp((tN / tP - 1) * 100)} vs the September consensus.`,
+    wk.length ? `This week's biggest change: ${lcFirst(wk[0].summary)} (${sg(impactUnits(wk[0], now))} units, from ${capById(wk[0].capture)?.person}).` : "",
+    risks.length ? `Supply is watching ${risks.length} SKU${risks.length === 1 ? "" : "s"}; ${skuById(risks[0].sku).short} drops below safety stock in the week of ${fDate(weekEndOf(risks[0].firstRisk.i))}.` : "No supply risks in the next 26 weeks.",
+    pend.length ? `${pend.length} item${pend.length === 1 ? " is" : "s are"} still under review, worth ${sg(pend.reduce((t, a) => t + impactUnits(a, now), 0))} units if accepted.` : "",
+  ].filter(Boolean).join(" ");
+  return { subject: `${COMPANY} forecast update, week of ${fDate(TODAY)}`, body, bullets: wk.slice(0, 3).map((a) => `${a.summary} (${sg(impactUnits(a, now))} units)`) };
 }
+import { WEEKS } from "../data/catalog.js";
+const weekEndOf = (i) => WEEKS[i].end;
 
-// ---- Decks ----
 export const DECKS = {
-  mbr: { name: "Monthly business review", for: "Marketing leadership", desc: "Performance, what drove it, the forecast and the decisions needed. 8 slides." },
-  sop: { name: "S&OP pre-read", for: "Demand and supply planning", desc: "What changed since the last cycle, supply risks and open decisions. 4 slides." },
-  retailer: { name: "Walmart account review", for: "Customer strategy", desc: "Walmart performance and drivers for the next buyer meeting. 4 slides." },
+  mbr: { name: "Monthly business review", for: "VP Marketing", desc: "Results, what drove them, share, the forecast and decisions needed. 9 slides." },
+  sop: { name: "S&OP pre-read", for: "Demand and supply planning", desc: "Changes since the last publish, inventory risks and open decisions. 4 slides." },
+  retailer: { name: "Walmart account review", for: "Customer strategy", desc: "Walmart performance, drivers and the agreed plan for the next buyer meeting. 4 slides." },
 };
-
-function trendSeries(skus, rets) {
+function trend(skus, rets) {
   const now = activeAt(NOW()), plan = activeAt(PLAN);
-  const months = [...LY12, ...FC];
-  return {
-    months,
-    series: [
-      { name: "Actual", values: months.map((m) => (HIST.includes(m) ? sumUnits(skus, rets, [m], now) : null)) },
-      { name: "Forecast", values: months.map((m, i) => (FC.includes(m) || i === LY12.length - 1 ? sumUnits(skus, rets, [m], now) : null)) },
-      { name: "Year ago", values: months.map((m) => sumUnits(skus, rets, [(+m.slice(0, 4) - 1) + m.slice(4)], now) || null) },
-    ],
-  };
+  const months = [...HIST_MONTHS.slice(-12), ...FC_MONTHS];
+  return { months, series: [
+    { name: "Actual", values: months.map((m) => (HIST_MONTHS.includes(m) ? monthUnits(skus, rets, m, now) : null)) },
+    { name: "Forecast", values: months.map((m, i) => (FC_MONTHS.includes(m) || i === 11 ? monthUnits(skus, rets, m, now) : null)) },
+    { name: "Plan", values: months.map((m) => (FC_MONTHS.includes(m) ? monthUnits(skus, rets, m, plan) : null)) },
+    { name: "Year ago", values: months.map((m) => monthUnits(skus, rets, shiftYM(m, -1), now) || null) },
+  ] };
 }
-
+function kpiSlide(title, skus, rets, note) {
+  const k1 = kpis(skus, rets, PERIODS.L13W.weeks), k0 = kpis(skus, rets, compWeeks("L13W", "YA"));
+  const s1 = shareOf(skus, rets, PERIODS.L13W.weeks), s0 = shareOf(skus, rets, compWeeks("L13W", "YA"));
+  return { type: "kpis", title, kicker: "Last 13 weeks vs year ago", kpis: [
+    ["Dollar sales", fMoney(k1.dollars), sp((k1.dollars / k0.dollars - 1) * 100)], ["Units", fK(k1.units), sp((k1.units / k0.units - 1) * 100)],
+    ["Dollar share", (s1 * 100).toFixed(1) + "%", pts((s1 - s0) * 100)], ["TDPs", k1.tdp.toFixed(0), sp((k1.tdp / k0.tdp - 1) * 100)],
+    ["Avg price", "$" + k1.avgPrice.toFixed(2), sp((k1.avgPrice / k0.avgPrice - 1) * 100)], ["%ACV on promotion", k1.promoAcv.toFixed(1), pts(k1.promoAcv - k0.promoAcv)],
+  ], note };
+}
 export function buildDeck(kind) {
   const S = getState();
   const now = activeAt(NOW()), plan = activeAt(PLAN);
-  if (kind === "retailer") return retailerDeck("WMT");
-  const decLY = decompose(ALL_S, ALL_R, PY12, LY12, now), decFC = decompose(ALL_S, ALL_R, LY12, FC, now);
-  const stLY = driverStory(decLY, "ly"), stFC = driverStory(decFC, "fc");
-  const k1 = kpis(ALL_S, ALL_R, LY12), k0 = kpis(ALL_S, ALL_R, PY12);
-  const tN = sumUnits(ALL_S, ALL_R, FC, now), tP = sumUnits(ALL_S, ALL_R, FC, plan);
-  const changes = S.assumptions.filter((a) => a.status === "approved" && key(a) > "2026-09-28").sort((a, b) => key(b).localeCompare(key(a)));
-  const pend = S.assumptions.filter((a) => a.status === "pending");
-  const risks = supplyRows().filter((r) => r.risk);
-  const bt = backtest(ALL_S, ALL_R);
-  const change = (a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(unitImpact(a, now)), `${capById(a.capture)?.person || ""}, ${fDate(a.decidedAt || a.createdAt)}`] });
-  if (kind === "sop") {
-    const rows = supplyRows();
+  const N = PERIODS.N52W.weeks;
+  if (kind === "retailer") {
+    const r = ["WMT"], rn = "Walmart";
+    const dec = decompose(ALL_S, r, compWeeks("L13W", "YA"), PERIODS.L13W.weeks), st = driverStory(dec, "L13W", ALL_S, r);
+    const agreed = now.filter((a) => a.retailers.includes("WMT"));
     return [
-      { type: "title", title: `${BRAND} S&OP pre-read`, sub: `Demand review · ${fDate(TODAY)}, 2026 · prepared by Texere` },
-      { type: "bullets", title: `Forecast moved ${sg(tN - tP)} units (${sp((tN / tP - 1) * 100)}) since the September consensus`, bullets: [stFC.headline, ...stFC.bullets.map((b) => b.text)].slice(0, 5) },
-      { type: "table", title: `${rows.length} SKU-months changed since the last publish on ${fDate(S.lastSync.slice(0, 10))}`, head: ["SKU", "Month", "Published", "Now", "Change", "Why"], rows: rows.slice(0, 8).map((r) => ({ cells: [skuById(r.sku).short, mLabel(r.m), fU(r.sync), fU(r.now), sg(r.diff), r.reasons.map((a) => a.id).join(", ") || "Earlier change"], tone: r.risk ? (r.diff > 0 ? "warn" : "bad") : "" })), empty: "No changes since the last publish." },
-      { type: "table", title: `${pend.length} decision${pend.length === 1 ? "" : "s"} needed before we lock the forecast`, head: ["ID", "Pending item", "Months", "Units if accepted", "Raised by"], rows: pend.map((a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(unitImpact(a, now)), capById(a.capture)?.person || ""] })), empty: "Nothing pending." },
+      { type: "title", title: `${COMPANY} × ${rn}`, sub: `Account review prepared by Texere for ${ROLES.cs.person} · ${fDate(TODAY)}, 2026` },
+      kpiSlide(`${rn}: ${st.headline.toLowerCase()} in the last 13 weeks`, ALL_S, r, "Source: NielsenIQ, Walmart, weekly (simulated)."),
+      { type: "waterfall", title: `What drove ${rn} in the last 13 weeks`, start: dec.A, end: dec.B, steps: decompSteps(dec), startLabel: "Year ago", endLabel: "L13W", bullets: st.bullets.slice(0, 3).map((b) => b.text) },
+      { type: "table", title: `What we've agreed with ${rn} for the year ahead`, head: ["ID", "Plan", "Months", "Units"], rows: agreed.map((a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(impactUnits(a, now))] })), empty: "No agreed events yet." },
     ];
   }
+  const decQ = decompose(ALL_S, ALL_R, compWeeks("L13W", "YA"), PERIODS.L13W.weeks), stQ = driverStory(decQ, "L13W");
+  const decF = decompose(ALL_S, ALL_R, PERIODS.L52W.weeks, N, now), stF = driverStory(decF, "N52W");
+  const tN = units(ALL_S, ALL_R, N, now), tP = units(ALL_S, ALL_R, N, plan);
+  const pend = S.assumptions.filter((a) => a.status === "pending");
+  const sup = allSupply();
+  const risks = sup.filter((x) => x.firstRisk || x.excess);
+  if (kind === "sop") {
+    const changed = sup.filter((x) => Math.abs(x.d13) >= 1).sort((a, b) => Math.abs(b.d13) - Math.abs(a.d13));
+    return [
+      { type: "title", title: `${COMPANY} S&OP pre-read`, sub: `Demand review · ${fDate(TODAY)}, 2026 · prepared by Texere` },
+      { type: "bullets", kicker: "Summary", title: `Forecast moved ${sg(tN - tP)} units (${sp((tN / tP - 1) * 100)}) vs the September consensus`, bullets: [stF.headline + " in the next 52 weeks vs the last 52.", ...stF.bullets.map((b) => b.text)].slice(0, 5) },
+      { type: "table", title: `${changed.length} SKUs changed in the next 13 weeks since the last publish`, head: ["SKU", "Published 13 wk", "Change", "First risk", "Why"], rows: changed.map((x) => ({ cells: [skuById(x.sku).short, fK(x.pub13), sg(x.d13) + " (" + sp(x.pct13 * 100) + ")", x.firstRisk ? "w/e " + fDate(weekEndOf(x.firstRisk.i)) : x.excess ? "Excess" : "None", x.reasons.map((a) => a.id).join(", ") || "–"], tone: x.firstRisk ? "bad" : x.excess ? "warn" : "" })), empty: "No changes since the last publish." },
+      { type: "table", title: `${pend.length} decision${pend.length === 1 ? "" : "s"} needed before we lock the forecast`, head: ["ID", "Pending item", "Months", "Units if accepted", "Raised by"], rows: pend.map((a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(impactUnits(a, now)), capById(a.capture)?.person || ""] })), empty: "Nothing pending." },
+    ];
+  }
+  const ct = competitorTable(ALL_S, ALL_R, compWeeks("L13W", "YA"), PERIODS.L13W.weeks).sort((a, b) => b.share - a.share);
+  const acc = accuracy(ALL_S, ALL_R);
+  const changes = S.assumptions.filter((a) => a.status === "approved" && key(a) > "2026-09-28").sort((a, b) => key(b).localeCompare(key(a)));
+  const tr = trend(ALL_S, ALL_R);
   return [
-    { type: "title", title: `${BRAND} monthly business review`, sub: `${mLabel(LY12[LY12.length - 1])} close · prepared by Texere for ${ROLES.lead.person}` },
-    { type: "bullets", title: stLY.headline.replace(/\.$/, ""), kicker: "Executive summary", bullets: [
-      `${stLY.bullets[0]?.text || ""}`,
-      `Next 12 months: ${fK(tN)} units, ${sp((tN / tP - 1) * 100)} vs the September consensus. ${stFC.bullets[0]?.text || ""}`,
-      risks.length ? `${risks.length} supply risk${risks.length === 1 ? "" : "s"} flagged; ${pend.length} decision${pend.length === 1 ? "" : "s"} pending (slide 8).` : `${pend.length} decision${pend.length === 1 ? "" : "s"} pending (slide 8).`,
-    ] },
-    { type: "kpis", title: "Last 12 months vs a year ago", kpis: [
-      ["Units", fK(k1.units), sp((k1.units / k0.units - 1) * 100)], ["Dollar sales", fMoney(k1.dollars), sp((k1.dollars / k0.dollars - 1) * 100)],
-      ["Avg %ACV distribution", k1.acv.toFixed(1), pts(k1.acv - k0.acv)], ["Avg price", "$" + k1.avgPrice.toFixed(2), sp((k1.avgPrice / k0.avgPrice - 1) * 100)],
-      ["%ACV on promotion", k1.promoAcv.toFixed(1), pts(k1.promoAcv - k0.promoAcv)], ["%ACV on display", k1.dispAcv.toFixed(1), pts(k1.dispAcv - k0.dispAcv)],
-    ], note: "Source: NielsenIQ retail measurement, by retailer (simulated in this prototype)." },
-    { type: "trend", title: `Forecast ${fK(tN)} units for the next 12 months`, ...trendSeries(ALL_S, ALL_R), note: `Forecast accuracy in backtest: ${(bt.withContext * 100).toFixed(0)}% with captured context vs ${(bt.noContext * 100).toFixed(0)}% from the trade calendar alone.` },
-    { type: "waterfall", title: "What drove the last 12 months", start: decLY.A, end: decLY.B, steps: driverSteps(decLY), startLabel: "Year ago", endLabel: "Last 12 mo", bullets: stLY.bullets.slice(0, 3).map((b) => b.text) },
-    { type: "waterfall", title: "What drives the next 12 months", start: decFC.A, end: decFC.B, steps: driverSteps(decFC), startLabel: "Last 12 mo", endLabel: "Next 12 mo", bullets: stFC.bullets.slice(0, 3).map((b) => b.text) },
-    { type: "table", title: `${changes.length} forecast changes this cycle, each traced to its source`, head: ["ID", "What changed", "Months", "Units", "Source"], rows: changes.slice(0, 7).map(change), empty: "No changes yet this cycle." },
-    { type: "table", title: "Decisions and risks", head: ["Item", "Detail", "Months", "Units", "Owner"], rows: [
-      ...pend.map((a) => ({ cells: ["Decide", a.summary, mRange(a.months), sg(unitImpact(a, now)), capById(a.capture)?.person || ""], tone: "warn" })),
-      ...risks.slice(0, 3).map((r) => ({ cells: ["Supply risk", `${skuById(r.sku).short}: ${r.risk.toLowerCase()}`, mLabel(r.m), sg(r.diff), ROLES.sp.person], tone: "bad" })),
+    { type: "title", title: `${COMPANY} monthly business review`, sub: `October 2026 close · prepared by Texere for ${ROLES.lead.person}` },
+    { type: "bullets", kicker: "Executive summary", title: `${stQ.headline} in the last 13 weeks; the forecast is ${sp((tN / tP - 1) * 100)} vs plan`, bullets: [stQ.bullets[0]?.text, stQ.bullets[1]?.text, `Next 52 weeks: ${fK(tN)} units. ${stF.bullets[0]?.text || ""}`, `${pend.length} decision${pend.length === 1 ? "" : "s"} pending and ${risks.length} SKU${risks.length === 1 ? "" : "s"} on supply watch (slide 9).`].filter(Boolean) },
+    kpiSlide("Sales, share and the drivers behind them", ALL_S, ALL_R, "Source: NielsenIQ retail measurement, 4 retailers, weekly (simulated in this prototype)."),
+    { type: "waterfall", title: "What drove the last 13 weeks vs a year ago", start: decQ.A, end: decQ.B, steps: decompSteps(decQ), startLabel: "Year ago", endLabel: "L13W", bullets: stQ.bullets.slice(0, 3).map((b) => b.text) },
+    { type: "table", kicker: "Competition", title: "Dollar share in our segments, last 13 weeks", head: ["Brand", "Share", "vs YA", "Avg price", "Weeks on promo"], rows: ct.map((c) => ({ cells: [c.name, (c.share * 100).toFixed(1) + "%", pts((c.share - c.shareA) * 100), "$" + c.price.toFixed(2), (c.promo * 100).toFixed(0) + "%"] })) },
+    { type: "trend", title: `Forecast: ${fK(tN)} units over the next 52 weeks`, ...tr, labels: tr.months.map((m) => mLabel(m)), note: `Backtest accuracy (last 13 weeks): ${(acc.withContext * 100).toFixed(0)}% with captured context vs ${(acc.noContext * 100).toFixed(0)}% from history alone.` },
+    { type: "waterfall", title: "What drives the next 52 weeks vs the last 52", start: decF.A, end: decF.B, steps: decompSteps(decF), startLabel: "L52W", endLabel: "N52W", bullets: stF.bullets.slice(0, 3).map((b) => b.text) },
+    { type: "table", title: `${changes.length} forecast changes this cycle, each traced to its source`, head: ["ID", "What changed", "Months", "Units", "Source"], rows: changes.slice(0, 8).map((a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(impactUnits(a, now)), `${capById(a.capture)?.person}, ${fDate(a.decidedAt)}`] })), empty: "No changes yet this cycle." },
+    { type: "table", title: "Decisions and risks", head: ["Item", "Detail", "When", "Units", "Owner"], rows: [
+      ...pend.map((a) => ({ cells: ["Decide", a.summary, mRange(a.months), sg(impactUnits(a, now)), capById(a.capture)?.person || ""], tone: "warn" })),
+      ...risks.map((x) => ({ cells: ["Supply", `${skuById(x.sku).short}: ${x.status.toLowerCase()}`, x.firstRisk ? "w/e " + fDate(weekEndOf(x.firstRisk.i)) : "w/e " + fDate(weekEndOf(x.excess.i)), sg(x.d13), ROLES.sp.person], tone: x.firstRisk ? "bad" : "" })),
     ], empty: "No open decisions or risks." },
-  ];
-}
-
-function retailerDeck(ret) {
-  const now = activeAt(NOW());
-  const rn = retById(ret).name;
-  const decLY = decompose(ALL_S, [ret], PY12, LY12, now), decFC = decompose(ALL_S, [ret], LY12, FC, now);
-  const st = driverStory(decLY, "ly", ALL_S, [ret]), stF = driverStory(decFC, "fc", ALL_S, [ret]);
-  const k1 = kpis(ALL_S, [ret], LY12), k0 = kpis(ALL_S, [ret], PY12);
-  const upcoming = activeAt(NOW()).filter((a) => a.retailers.includes(ret));
-  return [
-    { type: "title", title: `${BRAND} × ${rn} account review`, sub: `Prepared by Texere for ${ROLES.cs.person}, ${fDate(TODAY)}, 2026` },
-    { type: "kpis", title: `${rn}: ${st.headline.replace(/\.$/, "").toLowerCase()}`, kpis: [
-      ["Units", fK(k1.units), sp((k1.units / k0.units - 1) * 100)], ["Dollar sales", fMoney(k1.dollars), sp((k1.dollars / k0.dollars - 1) * 100)],
-      ["%ACV distribution", k1.acv.toFixed(1), pts(k1.acv - k0.acv)], ["Avg price", "$" + k1.avgPrice.toFixed(2), sp((k1.avgPrice / k0.avgPrice - 1) * 100)],
-      ["%ACV on promotion", k1.promoAcv.toFixed(1), pts(k1.promoAcv - k0.promoAcv)], ["%ACV on display", k1.dispAcv.toFixed(1), pts(k1.dispAcv - k0.dispAcv)],
-    ], note: "Source: NielsenIQ retail measurement, Walmart (simulated in this prototype)." },
-    { type: "waterfall", title: `What drove ${rn} in the last 12 months`, start: decLY.A, end: decLY.B, steps: driverSteps(decLY), startLabel: "Year ago", endLabel: "Last 12 mo", bullets: st.bullets.slice(0, 3).map((b) => b.text) },
-    { type: "table", title: `What we've agreed with ${rn} for the next 12 months`, head: ["ID", "Plan", "Months", "Units"], rows: upcoming.map((a) => ({ cells: [a.id, a.summary, mRange(a.months), sg(unitImpact(a, now))] })), empty: "No agreed events yet.", note: stF.headline },
   ];
 }

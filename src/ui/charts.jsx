@@ -1,91 +1,179 @@
-import React from "react";
-import { fK, fU } from "./format.js";
-import { mShort, mLabel } from "../data/catalog.js";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { fK } from "./format.js";
 
-function niceTop(mx) {
-  if (mx <= 0) return 1;
-  const step = Math.pow(10, Math.floor(Math.log10(mx / 4)));
-  const nice = [1, 2, 2.5, 5, 10].map((f) => f * step).find((s) => mx / s <= 5) || step * 10;
-  return { top: Math.ceil((mx * 1.08) / nice) * nice, nice };
+export function useWidth(min = 280) {
+  const ref = useRef(null); const [w, setW] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    const set = () => setW(Math.max(min, el.clientWidth));
+    set();
+    const ro = new ResizeObserver(set); ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+export function niceTicks(lo, hi, n = 4) {
+  if (hi === lo) hi = lo + 1;
+  const step0 = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0) || step0;
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step;
+  const t = []; for (let v = a; v <= b + step / 2; v += step) t.push(+v.toFixed(6));
+  return t;
 }
 
-// Waterfall: start total, one floating bar per driver, end total
-export function Waterfall({ start, end, steps, startLabel, endLabel, title }) {
-  const W = 760, H = 320, L = 60, R = 16, T = 28, B = 64;
-  const items = [{ label: startLabel, v: start, total: true }, ...steps.filter((s) => Math.abs(s.v) >= 0.5), { label: endLabel, v: end, total: true }];
-  let run = start; const bars = [];
-  for (const it of items) {
-    if (it.total) bars.push({ ...it, y0: 0, y1: it.v });
-    else { bars.push({ ...it, y0: run, y1: run + it.v }); run += it.v; }
-  }
-  const vals = bars.flatMap((b) => (b.total ? [b.y1] : [b.y0, b.y1]));
-  const mn = Math.min(...vals), mx = Math.max(...vals);
-  // Zoom the axis so driver bars are readable; totals are drawn with a broken base
-  const lo = Math.max(0, mn - (mx - mn) * 0.6), { top, nice } = niceTop(mx);
-  const floor = Math.floor(lo / nice) * nice;
-  const Y = (v) => T + (1 - (v - floor) / (top - floor)) * (H - T - B);
-  const bw = (W - L - R) / bars.length;
-  const grid = [];
-  for (let v = floor; v <= top + 1e-6; v += nice) grid.push(v);
+export function Spark({ values, color = "var(--brand)", h = 28, w = 96, fill = true, splitAt }) {
+  const v = values.filter((x) => x != null); if (v.length < 2) return null;
+  const lo = Math.min(...v), hi = Math.max(...v), r = hi - lo || 1;
+  const pts = values.map((x, i) => [(i / (values.length - 1)) * w, h - 2 - ((x - lo) / r) * (h - 4)]);
+  const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title || "Driver waterfall"} className="chart">
-      {grid.map((v) => <g key={v}><line x1={L} x2={W - R} y1={Y(v)} y2={Y(v)} stroke="var(--grid)" /><text x={L - 8} y={Y(v) + 4} textAnchor="end" fontSize="11" fill="var(--ink-3)" fontFamily="var(--mono)">{fK(v)}</text></g>)}
-      {bars.map((b, i) => {
-        const x = L + i * bw + bw * 0.18, w = bw * 0.64;
-        const yTop = Y(Math.max(b.y0, b.y1)), yBot = Y(Math.max(floor, Math.min(b.y0, b.y1)));
-        const fill = b.total ? "var(--accent)" : b.v >= 0 ? "var(--good)" : "var(--bad)";
-        const next = bars[i + 1];
-        return (
-          <g key={i}>
-            <rect x={x} y={yTop} width={w} height={Math.max(1.5, yBot - yTop)} rx="3" fill={fill} opacity={b.total ? 0.9 : 0.85} />
-            {next && <line x1={x + w} x2={x + bw} y1={Y(b.y1)} y2={Y(b.y1)} stroke="var(--line-2)" strokeDasharray="3 3" />}
-            <text x={x + w / 2} y={yTop - 6} textAnchor="middle" fontSize="11.5" fontFamily="var(--mono)" fill={b.total ? "var(--ink)" : b.v >= 0 ? "var(--good)" : "var(--bad)"} fontWeight="500">{b.total ? fK(b.v) : (b.v >= 0 ? "+" : "−") + fK(Math.abs(b.v))}</text>
-            <foreignObject x={L + i * bw} y={H - B + 8} width={bw} height={B - 8}>
-              <div className="wf-label">{b.label}</div>
-            </foreignObject>
-          </g>
-        );
-      })}
-      {floor > 0 && <text x={W - R} y={T - 12} textAnchor="end" fontSize="10.5" fill="var(--ink-3)">Axis starts at {fK(floor)} to show the drivers</text>}
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="spark" aria-hidden="true">
+      {fill && <path d={d + `L${w} ${h}L0 ${h}Z`} fill={color} opacity=".1" />}
+      <path d={splitAt ? pts.slice(0, splitAt + 1).map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join("") : d} fill="none" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+      {splitAt && <path d={pts.slice(splitAt).map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join("")} fill="none" stroke={color} strokeWidth="1.6" strokeDasharray="2 2.5" />}
+      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="2.2" fill={color} />
     </svg>
   );
 }
 
-// Monthly trend: actuals, forecast, last year and plan
-export function TrendChart({ months, series, todayIdx, onPick, selected, markers = new Set(), height = 300 }) {
-  const W = 760, H = height, L = 56, R = 16, T = 20, B = 36;
-  const all = series.flatMap((s) => s.values.filter((v) => v != null));
-  const { top, nice } = niceTop(Math.max(...all, 1));
-  const n = months.length;
-  const X = (i) => L + (i * (W - L - R)) / (n - 1), Y = (v) => T + (1 - v / top) * (H - T - B);
-  const grid = []; for (let v = 0; v <= top + 1e-6; v += nice) grid.push(v);
-  const path = (vals) => { let d = "", pen = false; vals.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1); pen = true; }); return d; };
-  const every = n > 18 ? 3 : 1;
+// Multi-series line chart with optional hover, highlighted forecast region and selected column.
+export function Lines({ labels, series, height = 240, fmt = fK, splitAt, selected, onPick, yZero = false, legend = true, tipExtra }) {
+  const [ref, W] = useWidth();
+  const [hov, setHov] = useState(null);
+  const L = 48, R = 12, T = 12, B = 26, w = W - L - R, h = height - T - B;
+  const all = series.flatMap((s) => s.values.filter((x) => x != null));
+  const lo0 = Math.min(...all), hi0 = Math.max(...all);
+  const ticks = niceTicks(yZero ? 0 : lo0 - (hi0 - lo0) * 0.08, hi0 + (hi0 - lo0) * 0.05);
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const n = labels.length, x = (i) => L + (n === 1 ? w / 2 : (i / (n - 1)) * w), y = (v) => T + h - ((v - lo) / (hi - lo)) * h;
+  const every = Math.ceil(n / Math.max(3, Math.floor(w / 64)));
+  const path = (vals) => { let d = "", on = false; vals.forEach((v, i) => { if (v == null) { on = false; return; } d += (on ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); on = true; }); return d; };
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Monthly units" className="chart">
-      {grid.map((v) => <g key={v}><line x1={L} x2={W - R} y1={Y(v)} y2={Y(v)} stroke="var(--grid)" /><text x={L - 8} y={Y(v) + 4} textAnchor="end" fontSize="11" fill="var(--ink-3)" fontFamily="var(--mono)">{fK(v)}</text></g>)}
-      {todayIdx != null && <g><rect x={X(todayIdx) + (X(1) - X(0)) / 2} y={T} width={W - R - X(todayIdx) - (X(1) - X(0)) / 2} height={H - T - B} fill="var(--accent-soft)" opacity="0.35" /><text x={X(todayIdx) + (X(1) - X(0)) / 2 + 6} y={T + 12} fontSize="11" fill="var(--ink-3)">Forecast</text></g>}
-      {selected != null && <rect x={X(selected) - 14} y={T - 4} width="28" height={H - T - B + 8} rx="6" fill="var(--accent-soft)" />}
-      {series.map((s) => <path key={s.name} d={path(s.values)} fill="none" stroke={s.color} strokeWidth={s.width || 2} strokeDasharray={s.dash || "none"} strokeLinejoin="round" />)}
-      {months.map((m, i) => {
-        const main = series[0].values[i];
-        return (
-          <g key={m} onClick={onPick ? () => onPick(m) : undefined} style={{ cursor: onPick ? "pointer" : "default" }}>
-            <rect x={X(i) - (W - L - R) / (n - 1) / 2} y={T} width={(W - L - R) / (n - 1)} height={H - T} fill="transparent" />
-            {i % every === 0 && <text x={X(i)} y={H - 12} textAnchor="middle" fontSize="11" fill={selected === i ? "var(--ink)" : "var(--ink-3)"} fontWeight={selected === i ? 600 : 400}>{mShort(m)}{m.endsWith("-01") || i === 0 ? " ’" + m.slice(2, 4) : ""}</text>}
-            {markers.has(m) && main != null && <circle cx={X(i)} cy={Y(main)} r={selected === i ? 6.5 : 5} fill="var(--weft)" stroke="var(--surface)" strokeWidth="2" />}
-            <title>{mLabel(m)}: {series.map((s) => s.values[i] != null ? `${s.name} ${fU(s.values[i])}` : null).filter(Boolean).join(" · ")}</title>
-          </g>
-        );
-      })}
-    </svg>
+    <div className="chart" ref={ref}>
+      {legend && <div className="legend">{series.filter((s) => !s.hideLegend).map((s) => <span key={s.name}><i style={{ background: s.color, ...(s.dash ? { backgroundImage: `repeating-linear-gradient(90deg, ${s.color} 0 4px, transparent 4px 7px)`, background: "none" } : {}) }} className={s.dash ? "dash" : ""} />{s.name}</span>)}</div>}
+      {W > 0 && (
+        <svg width={W} height={height} role="img" aria-label={series.map((s) => s.name).join(", ")} onMouseLeave={() => setHov(null)}>
+          {splitAt != null && <rect x={x(splitAt)} y={T} width={L + w - x(splitAt)} height={h} className="fc-band" />}
+          {splitAt != null && <text x={x(splitAt) + 6} y={T + 12} className="ax-note">Forecast</text>}
+          {ticks.map((t) => <g key={t}><line x1={L} x2={L + w} y1={y(t)} y2={y(t)} className="grid" /><text x={L - 8} y={y(t) + 4} textAnchor="end" className="ax">{fmt(t)}</text></g>)}
+          {labels.map((l, i) => (i % every === 0 || i === n - 1) && <text key={i} x={x(i)} y={height - 8} textAnchor="middle" className="ax">{l}</text>)}
+          {selected != null && <rect x={x(selected) - w / n / 2} y={T} width={w / n} height={h} className="sel-col" />}
+          {series.map((s) => <path key={s.name} d={path(s.values)} fill="none" stroke={s.color} strokeWidth={s.width || 2} strokeDasharray={s.dash || undefined} strokeLinejoin="round" strokeLinecap="round" opacity={s.opacity || 1} />)}
+          {series.filter((s) => s.dots).map((s) => s.values.map((v, i) => v != null && <circle key={s.name + i} cx={x(i)} cy={y(v)} r="2.6" fill="var(--surface)" stroke={s.color} strokeWidth="1.6" />))}
+          {hov != null && <line x1={x(hov)} x2={x(hov)} y1={T} y2={T + h} className="hov-line" />}
+          {hov != null && series.map((s) => s.values[hov] != null && <circle key={s.name} cx={x(hov)} cy={y(s.values[hov])} r="4" fill={s.color} stroke="var(--surface)" strokeWidth="2" />)}
+          {labels.map((_, i) => <rect key={i} x={x(i) - w / Math.max(1, n - 1) / 2} y={T} width={w / Math.max(1, n - 1)} height={h + B} fill="transparent" onMouseEnter={() => setHov(i)} onClick={() => onPick?.(i)} style={{ cursor: onPick ? "pointer" : "default" }} />)}
+        </svg>
+      )}
+      {hov != null && W > 0 && (
+        <div className="tip" style={{ left: Math.min(W - 190, Math.max(0, x(hov) + 12)), top: 34 }}>
+          <b>{labels[hov]}</b>
+          {series.filter((s) => s.values[hov] != null && !s.hideTip).map((s) => <div key={s.name} className="tip-r"><i style={{ background: s.color }} />{s.name}<span className="num">{fmt(s.values[hov])}</span></div>)}
+          {tipExtra?.(hov)}
+        </div>
+      )}
+    </div>
   );
 }
-export function Spark({ values, w = 120, h = 30 }) {
-  const mx = Math.max(...values, 1), mn = Math.min(...values, 0);
-  const p = values.map((v, i) => `${((i / (values.length - 1)) * (w - 4) + 2).toFixed(1)},${(h - 3 - ((v - mn) / (mx - mn || 1)) * (h - 6)).toFixed(1)}`).join(" ");
-  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true"><polyline points={p} fill="none" stroke="var(--accent)" strokeWidth="1.6" /></svg>;
+
+// Waterfall bridge: start bar, driver steps, end bar.
+export function Waterfall({ start, end, steps, startLabel = "Before", endLabel = "After", height = 260, onPick, picked, fmt = fK }) {
+  const [ref, W] = useWidth();
+  const [hov, setHov] = useState(null);
+  const bars = []; let run = start;
+  bars.push({ k: "_s", label: startLabel, a: 0, b: start, total: true });
+  for (const s of steps) { bars.push({ k: s.key, label: s.label, a: run, b: run + s.v, v: s.v }); run += s.v; }
+  bars.push({ k: "_e", label: endLabel, a: 0, b: end, total: true });
+  const edges = bars.filter((b) => !b.total).flatMap((b) => [b.a, b.b]);
+  const tops = [start, end];
+  const lo0 = Math.min(...edges, ...tops) , hi0 = Math.max(...edges, ...tops);
+  const pad = (hi0 - lo0) * 0.25 || hi0 * 0.05;
+  const ticks = niceTicks(Math.max(0, lo0 - pad), hi0 + pad * 0.4);
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const L = 48, R = 8, T = 22, B = 46, w = W - L - R, h = height - T - B;
+  const bw = w / bars.length, y = (v) => T + h - ((v - lo) / (hi - lo)) * h;
+  const short = (s) => s.replace(" (TDPs)", "").replace(" (TPR)", "").replace("Base velocity", "Velocity");
+  return (
+    <div className="chart" ref={ref}>
+      {W > 0 && (
+        <svg width={W} height={height} role="img" aria-label={`Bridge from ${fmt(start)} to ${fmt(end)}`} onMouseLeave={() => setHov(null)}>
+          {ticks.map((t) => <g key={t}><line x1={L} x2={L + w} y1={y(t)} y2={y(t)} className="grid" /><text x={L - 8} y={y(t) + 4} textAnchor="end" className="ax">{fmt(t)}</text></g>)}
+          {lo > 0 && <text x={L + w} y={12} textAnchor="end" className="ax-note">Axis starts at {fmt(lo)}</text>}
+          {bars.map((b, i) => {
+            const top = y(Math.max(b.a, b.b)), bot = b.total ? y(lo) : y(Math.min(b.a, b.b));
+            const cls = b.total ? "wf-total" : b.v >= 0 ? "wf-up" : "wf-dn";
+            const on = picked === b.k;
+            return (
+              <g key={b.k} onMouseEnter={() => setHov(i)} onClick={() => !b.total && onPick?.(b.k)} style={{ cursor: !b.total && onPick ? "pointer" : "default" }}>
+                <rect x={L + i * bw} y={T} width={bw} height={h + B} fill="transparent" />
+                <rect x={L + i * bw + bw * 0.16} y={top} width={bw * 0.68} height={Math.max(1.5, bot - top)} rx="3" className={cx2(cls, on && "on", hov === i && "hov")} />
+                {i < bars.length - 1 && <line x1={L + i * bw + bw * 0.84} x2={L + (i + 1) * bw + bw * 0.16} y1={y(b.total ? b.b : b.b)} y2={y(b.total ? b.b : b.b)} className="wf-link" />}
+                <text x={L + i * bw + bw / 2} y={top - 6} textAnchor="middle" className={"wf-v " + (b.total ? "" : b.v >= 0 ? "up" : "dn")}>{b.total ? fmt(b.b) : (b.v >= 0 ? "+" : "−") + fmt(Math.abs(b.v))}</text>
+                <foreignObject x={L + i * bw + 1} y={T + h + 6} width={bw - 2} height={B - 6}><div className={"wf-l" + (on ? " on" : "")}>{short(b.label)}</div></foreignObject>
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </div>
+  );
 }
-export function Legend({ items }) {
-  return <div className="legend">{items.map((it) => <span key={it.name}><i style={{ borderColor: it.color, borderTopStyle: it.dash ? "dashed" : "solid", borderTopWidth: it.width || 2 }} />{it.name}</span>)}</div>;
+const cx2 = (...a) => a.filter(Boolean).join(" ");
+
+// Supply: projected inventory vs safety stock, demand bars underneath
+export function InventoryChart({ rows, labels, height = 260 }) {
+  const [ref, W] = useWidth();
+  const [hov, setHov] = useState(null);
+  const L = 52, R = 12, T = 14, B = 26, w = W - L - R, h = height - T - B;
+  const hiV = Math.max(...rows.map((r) => Math.max(r.onHand, r.safety)), 1), loV = Math.min(0, ...rows.map((r) => r.onHand));
+  const ticks = niceTicks(loV, hiV * 1.05); const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const n = rows.length, bw = w / n, x = (i) => L + i * bw + bw / 2, y = (v) => T + h - ((v - lo) / (hi - lo)) * h;
+  const area = rows.map((r, i) => (i ? "L" : "M") + x(i) + " " + y(r.onHand)).join("") + `L${x(n - 1)} ${y(0)}L${x(0)} ${y(0)}Z`;
+  const line = (k) => rows.map((r, i) => (i ? "L" : "M") + x(i) + " " + y(r[k])).join("");
+  const every = Math.ceil(n / Math.max(3, Math.floor(w / 60)));
+  return (
+    <div className="chart" ref={ref}>
+      <div className="legend"><span><i style={{ background: "var(--brand)" }} />Projected on hand</span><span><i className="dash" style={{ background: "none", backgroundImage: "repeating-linear-gradient(90deg, var(--bad) 0 4px, transparent 4px 7px)" }} />Safety stock</span><span><i style={{ background: "var(--zone-f)" }} />Frozen zone</span></div>
+      {W > 0 && (
+        <svg width={W} height={height} onMouseLeave={() => setHov(null)} role="img" aria-label="Projected inventory">
+          <rect x={L} y={T} width={bw * 4} height={h} className="zone-f" />
+          <rect x={L + bw * 4} y={T} width={bw * 9} height={h} className="zone-s" />
+          <text x={L + 4} y={T + 11} className="ax-note">Frozen</text><text x={L + bw * 4 + 4} y={T + 11} className="ax-note">Slushy</text><text x={L + bw * 13 + 4} y={T + 11} className="ax-note">Liquid</text>
+          {ticks.map((t) => <g key={t}><line x1={L} x2={L + w} y1={y(t)} y2={y(t)} className={t === 0 ? "grid zero" : "grid"} /><text x={L - 8} y={y(t) + 4} textAnchor="end" className="ax">{fK(t)}</text></g>)}
+          {rows.map((r, i) => (r.status === "below" || r.status === "stockout") && <rect key={i} x={L + i * bw} y={T} width={bw} height={h} className="risk-col" />)}
+          <path d={area} className="inv-area" />
+          <path d={line("onHand")} fill="none" stroke="var(--brand)" strokeWidth="2" />
+          <path d={line("safety")} fill="none" stroke="var(--bad)" strokeWidth="1.5" strokeDasharray="4 3" />
+          {rows.map((r, i) => (i % every === 0) && <text key={i} x={x(i)} y={height - 8} textAnchor="middle" className="ax">{labels[i]}</text>)}
+          {hov != null && <line x1={x(hov)} x2={x(hov)} y1={T} y2={T + h} className="hov-line" />}
+          {rows.map((_, i) => <rect key={i} x={L + i * bw} y={T} width={bw} height={h} fill="transparent" onMouseEnter={() => setHov(i)} />)}
+        </svg>
+      )}
+      {hov != null && W > 0 && (
+        <div className="tip" style={{ left: Math.min(W - 200, x(hov) + 12), top: 30 }}>
+          <b>w/e {labels[hov]} · {rows[hov].zone}</b>
+          <div className="tip-r">Demand now<span className="num">{fK(rows[hov].current)}</span></div>
+          <div className="tip-r">Published<span className="num">{fK(rows[hov].published)}</span></div>
+          <div className="tip-r">On hand<span className="num">{fK(rows[hov].onHand)}</span></div>
+          <div className="tip-r">Weeks of supply<span className="num">{rows[hov].wos.toFixed(1)}</span></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Horizontal bar list (share, contributions)
+export function HBars({ rows, fmt = (v) => v, max }) {
+  const m = max || Math.max(...rows.map((r) => Math.abs(r.v)), 1e-9);
+  return (
+    <div className="hbars">
+      {rows.map((r) => (
+        <div className="hb" key={r.k}>
+          <span className="hb-l">{r.label}</span>
+          <span className="hb-t"><i style={{ width: (Math.abs(r.v) / m) * 100 + "%", background: r.color || "var(--brand)" }} /></span>
+          <span className="hb-v num">{fmt(r.v)}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
